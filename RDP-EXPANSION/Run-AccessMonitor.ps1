@@ -102,6 +102,7 @@ function New-MonitorState {
         AnyDeskActiveId = ''
         AnyDeskActiveName = ''
         AnyDeskLastTimestamp = [datetime]::UtcNow.ToString('o')
+        LastPowerTransition = ''
         UpdatedAt = (Get-Date).ToString('o')
     }
 }
@@ -113,6 +114,7 @@ function Add-MissingStateProperties {
         AnyDeskActiveId = ''
         AnyDeskActiveName = ''
         AnyDeskLastTimestamp = [datetime]::UtcNow.ToString('o')
+        LastPowerTransition = ''
     }.GetEnumerator()) {
         if (-not $State.PSObject.Properties[$property.Key]) {
             $State | Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value
@@ -187,6 +189,13 @@ function Test-HumanAccount {
         return $false
     }
     return $true
+}
+
+function Test-RemoteRdpAddress {
+    param([string]$Address)
+
+    if ([string]::IsNullOrWhiteSpace($Address)) { return $false }
+    return $Address -notin @('LOCAL', '127.0.0.1', '::1', 'localhost')
 }
 
 function New-AccessAlert {
@@ -298,7 +307,10 @@ function Collect-RdpAlerts {
             41 { 'ArbitrationStarted' }
             42 { 'ArbitrationEnded' }
         }
-        $sendEmail = $event.Id -in @(21, 25)
+        $isRemoteRdp = Test-RemoteRdpAddress -Address $source
+        # El 21 tambien dispara en consola fisica (Address=LOCAL). El correo de
+        # RDP nuevo sale del 4624 LogonType 10, que incluye IP WAN.
+        $sendEmail = ($event.Id -eq 25) -and $isRemoteRdp
         $description = "Evento $($event.Id); sesion $session"
         if ($reason) { $description += "; motivo $reason" }
 
@@ -368,8 +380,11 @@ function Collect-SecurityAlerts {
             $data.IpAddress -notin @('-', '127.0.0.1', '::1')
         $isRemote = $logonType -eq '10' -or ($logonType -eq '7' -and $hasRemoteAddress)
         $method = if ($isRemote) { 'RDP' } else { 'FISICAMENTE' }
-        $isRelevant = if ($method -eq 'RDP') {
-            # Los exitos RDP se notifican con 21/25, que identifican mejor la sesion.
+        $isRelevant = if ($logonType -eq '10') {
+            $true
+        }
+        elseif ($method -eq 'RDP') {
+            # Tipo 7 remoto: el correo de reconexion sale del evento 25.
             $event.Id -eq 4625
         }
         else {
@@ -412,7 +427,9 @@ function Collect-SecurityAlerts {
 function Get-SystemPowerDefinition {
     param(
         [Parameter(Mandatory)][int]$EventId,
-        [Parameter(Mandatory)][string]$ProviderName
+        [Parameter(Mandatory)][string]$ProviderName,
+        $Data,
+        $State
     )
 
     switch ($EventId) {
@@ -446,6 +463,17 @@ function Get-SystemPowerDefinition {
         }
         107 {
             if ($ProviderName -eq 'Microsoft-Windows-Kernel-Power') {
+                $wakeFromState = 0
+                if ($Data -and $Data.WakeFromState) {
+                    [void][int]::TryParse([string]$Data.WakeFromState, [ref]$wakeFromState)
+                }
+                $fromShutdown = $State -and [string]$State.LastPowerTransition -eq 'Shutdown'
+                # Fast Startup: 1074 + 42 + 107 estado 5. Sleep real: 42 sin apagado.
+                if ($fromShutdown -or $wakeFromState -ge 5) {
+                    return [pscustomobject]@{
+                        Method = 'ENCENDIDO'; EventType = 'Startup'; Email = $true; Success = $true
+                    }
+                }
                 return [pscustomobject]@{
                     Method = 'RESTAURAR'; EventType = 'Resume'; Email = $true; Success = $true
                 }
@@ -540,13 +568,21 @@ function Collect-SystemPowerAlerts {
     $xpath = "*[System[(($eventIds) and (EventRecordID>$([long]$State.SystemRecordId)))]]"
     $events = @(Get-WinEvent -LogName $config.SystemLogName -FilterXPath $xpath `
         -ErrorAction SilentlyContinue | Sort-Object RecordId)
+    $startupEmailSent = $false
 
     foreach ($event in $events) {
-        $definition = Get-SystemPowerDefinition -EventId $event.Id -ProviderName $event.ProviderName
+        $data = @{}
+        try { $data = Get-EventData -Event $event } catch { $data = @{} }
+
+        $definition = Get-SystemPowerDefinition -EventId $event.Id -ProviderName $event.ProviderName `
+            -Data $data -State $State
         $State.SystemRecordId = [long]$event.RecordId
         if (-not $definition) { continue }
 
-        $data = Get-EventData -Event $event
+        if ($definition.Method -eq 'ENCENDIDO' -and $definition.Email -and $startupEmailSent) {
+            $definition.Email = $false
+        }
+
         $user = if ($data.param7) { [string]$data.param7 } else { '' }
         $source = $event.ProviderName
         $description = Get-SystemPowerDetails -Event $event -Definition $definition -Data $data
@@ -557,9 +593,22 @@ function Collect-SystemPowerAlerts {
             -EmailAlert $definition.Email
 
         if ($definition.Email) {
+            if ($definition.Method -eq 'ENCENDIDO') { $startupEmailSent = $true }
             Add-AlertToQueue (New-AccessAlert -Success $definition.Success -Method $definition.Method `
                 -Timestamp $event.TimeCreated -User $(if ($user) { $user } else { 'No disponible' }) `
                 -Source $source -Details $description -SourceId "System:$($event.RecordId)")
+        }
+
+        if ($event.Id -eq 1074) {
+            $State.LastPowerTransition = 'Shutdown'
+        }
+        elseif ($event.Id -eq 42 -and [string]$State.LastPowerTransition -ne 'Shutdown') {
+            $State.LastPowerTransition = 'Sleep'
+        }
+        elseif ($event.Id -eq 107 -or (
+            $event.Id -eq 12 -and $event.ProviderName -eq 'Microsoft-Windows-Kernel-General'
+        )) {
+            $State.LastPowerTransition = ''
         }
     }
 }

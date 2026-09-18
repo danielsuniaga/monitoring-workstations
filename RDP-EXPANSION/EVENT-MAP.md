@@ -6,11 +6,14 @@ acceso; enviar un correo por cada uno produciria varias alertas por una sola con
 
 ## RDP - TerminalServices LocalSessionManager
 
-- **21 - LoginSuccess:** inicio RDP nuevo y correcto. Envia correo `True`.
+- **21 - LoginSuccess:** sesion iniciada en LocalSessionManager. Tambien ocurre
+  en consola fisica (`Address = LOCAL`), por eso **no envia correo**. El RDP
+  nuevo se toma del 4624 `LogonType 10`.
 - **22 - ShellStarted:** inicio del escritorio/shell de la sesion. Solo historial.
 - **23 - Logoff:** cierre completo de la sesion. Solo historial.
 - **24 - Disconnected:** sesion desconectada sin cerrarla. Solo historial.
-- **25 - Reconnected:** regreso a una sesion RDP existente. Envia correo `True`.
+- **25 - Reconnected:** reconexion RDP. Correo `True - RDP` si el evento trae
+  cliente remoto (IP LAN o WAN). `Address = LOCAL` es consola: sin correo RDP.
 - **39 - DisconnectedBySession:** una sesion desconecto a otra. Solo historial.
 - **40 - DisconnectReason:** desconexion con codigo de motivo. Solo historial.
 - **41 - ArbitrationStarted:** Windows comienza a decidir que sesion debe activarse.
@@ -30,7 +33,8 @@ lo que no se usa como fuente principal.
   - `LogonType 2`: inicio interactivo local. Correo `True - FISICAMENTE`.
   - `LogonType 7`: desbloqueo. Si contiene una IP remota se considera parte de RDP y
     no duplica el correo del evento 25; sin IP remota se considera fisico.
-  - `LogonType 10`: acceso remoto. El exito se toma de RDP 21/25 para evitar duplicados.
+  - `LogonType 10`: inicio interactivo remoto (RDP), con la IP del cliente en el
+    evento (LAN o WAN). Correo `True - RDP`.
   - `LogonType 11`: inicio local con credenciales en cache. Correo `True - FISICAMENTE`.
 - **4625:** autenticacion fallida.
   - Tipos 10 o 7 con IP remota: correo `False - RDP`.
@@ -92,9 +96,12 @@ encendio, se suspendio, se restauro o se apago de forma limpia o brusca.
 - **6008 EventLog - PreviousShutdownUnexpected:** el apagado anterior no fue
   limpio. Correo `False - APAGADO_REPENTINO`.
 - **42 Kernel-Power - Sleep:** la estacion entra en suspension. Solo historial
-  `SUSPENDER` para no alertar cada descanso corto.
-- **107 Kernel-Power - Resume:** la estacion se reanuda de suspension. Correo
-  `True - RESTAURAR`.
+  `SUSPENDER` para no alertar cada descanso corto. Si no hubo un 1074 previo,
+  marca la transicion como sleep real.
+- **107 Kernel-Power - Resume:** no siempre es restaurar. Tras un apagado
+  (1074 / Fast Startup, `WakeFromState` 5 o mayor) es encendido normal: correo
+  `True - ENCENDIDO`. Correo `True - RESTAURAR` solo si el 107 sigue a un sleep
+  real (evento 42 sin apagado).
 
 Se excluyen 6013 (uptime periodico al mediodia), 172, 187, 40, 566, 577 y 578
 de Kernel-Power: diagnostico interno, no un cambio de estacion.

@@ -72,17 +72,17 @@ El instalador:
 
 ## Alertas implementadas
 
-- RDP correcto: evento 21 de LocalSessionManager.
+- RDP correcto: evento 4624 con `LogonType = 10` (incluye IP WAN).
 - RDP reconectado: evento 25 de LocalSessionManager.
 - RDP fallido: evento 4625 con `LogonType = 10`.
 - Acceso fisico correcto o fallido: eventos 4624/4625 con tipos 2, 7 local y 11.
 - TeamViewer correcto o denegado: log de TeamViewer y resultado de autenticacion.
 - AnyDesk correcto: `Session started (ok)`.
 - AnyDesk fallido: solo marcadores explicitos de sesion denegada, rechazada o fallida.
-- Encendido: evento 12 de Kernel-General. Correo `True - ENCENDIDO`.
+- Encendido: evento 12 de Kernel-General, o evento 107 tras un apagado (Fast Startup).
 - Apagado o reinicio pedido: evento 1074. Correo `True - APAGADO`.
 - Apagado repentino: eventos 41 o 6008. Correo `False - APAGADO_REPENTINO`.
-- Restaurar de suspension: evento 107 de Kernel-Power. Correo `True - RESTAURAR`.
+- Restaurar de suspension: evento 107 solo despues de un sleep real. Correo `True - RESTAURAR`.
 - Suspender: evento 42. Solo historial.
 
 El detalle completo de eventos, correlaciones y exclusiones esta en `EVENT-MAP.md`.
